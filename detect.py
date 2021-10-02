@@ -6,6 +6,13 @@ Usage:
     $ python path/to/detect.py --source path/to/img.jpg --weights yolov5s.pt --img 640
 """
 
+from utils.torch_utils import load_classifier, select_device, time_sync
+from utils.plots import Annotator, colors
+from utils.general import apply_classifier, check_img_size, check_imshow, check_requirements, check_suffix, colorstr, \
+    increment_path, is_ascii, non_max_suppression, print_args, save_one_box, scale_coords, set_logging, \
+    strip_optimizer, xyxy2xywh
+from utils.datasets import LoadImages, LoadStreams
+from models.experimental import attempt_load
 import argparse
 import sys
 from pathlib import Path
@@ -14,19 +21,100 @@ import cv2
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
+import mediapipe as mp
+
+from frozendict import frozendict
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 
-from models.experimental import attempt_load
-from utils.datasets import LoadImages, LoadStreams
-from utils.general import apply_classifier, check_img_size, check_imshow, check_requirements, check_suffix, colorstr, \
-    increment_path, is_ascii, non_max_suppression, print_args, save_one_box, scale_coords, set_logging, \
-    strip_optimizer, xyxy2xywh
-from utils.plots import Annotator, colors
-from utils.torch_utils import load_classifier, select_device, time_sync
+
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
+mp_hands = mp.solutions.hands
+
+
+# step 1: 1 cellphone
+# step 2: 1 cellphone, 1 remote
+# step 3: 1 cellphone, 1 remote, 1 scissor
+
+state = {
+    'prev_step': 0,
+    'step_1_completed': False,
+    'step_2_completed': False,
+    'step_3_completed': False,
+}
+
+CELL_PHONE_ID = 67
+REMOTE_ID = 65
+SCISSORS_ID = 76
+DONE_COLOUR = (6, 201, 65)
+NOT_DONE_COLOUR = (255, 255, 255)
+
+X_OFFSET = 30
+Y_OFFSET = 350
+Y_PADDING = 80
+RECT_POINT_1 = (X_OFFSET - 60, Y_OFFSET - 60)
+RECT_POINT_2 = (300, Y_OFFSET + (Y_PADDING * 2) + 60)
+
+step_1 = frozendict({CELL_PHONE_ID: 1, REMOTE_ID: 0, SCISSORS_ID: 0})
+step_2 = frozendict({CELL_PHONE_ID: 1, REMOTE_ID: 1, SCISSORS_ID: 0})
+step_3 = frozendict({CELL_PHONE_ID: 1, REMOTE_ID: 1, SCISSORS_ID: 1})
+
+
+def find_step(detections):
+    step = -1
+    # print(state)
+    # print(detections, step_1)
+
+    num_cellphones = detections[CELL_PHONE_ID] if CELL_PHONE_ID in detections else 0
+    num_remotes = detections[REMOTE_ID] if REMOTE_ID in detections else 0
+    num_scissors = detections[SCISSORS_ID] if SCISSORS_ID in detections else 0
+
+    # match detections with corresponding step
+    # if detections == step_1: step = 1
+    # if detections == step_2: step = 2
+    # if detections == step_3: step = 3
+
+    if num_cellphones == 1 and num_remotes == 0 and num_scissors == 0:
+        step = 1
+    if num_cellphones == 1 and num_remotes == 1 and num_scissors == 0:
+        step = 2
+    if num_cellphones == 1 and num_remotes == 1 and num_scissors == 1:
+        step = 3
+
+    if step == -1:
+        return
+
+    # check if chronological ordering is maintained
+    if step == state['prev_step'] + 1:
+        state['prev_step'] = step
+        state[f'step_{step}_completed'] = True
+        # print(state)
+
+
+def show_steps(image):
+    # box background
+    cv2.rectangle(
+        img=image,
+        color=(100, 100, 100),
+        pt1=RECT_POINT_1,
+        pt2=RECT_POINT_2,
+        thickness=-1
+    )
+    # steps status
+    for step in range(1, 4):
+        cv2.putText(
+            img=image,
+            text=f"Step {step}",
+            org=(X_OFFSET, Y_OFFSET + Y_PADDING * (step - 1)),
+            fontFace=0,
+            fontScale=2,
+            color=DONE_COLOUR if state[f'step_{step}_completed'] else NOT_DONE_COLOUR,
+            thickness=6,
+        )
 
 
 @torch.no_grad()
@@ -55,34 +143,41 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         hide_conf=False,  # hide confidences
         half=False,  # use FP16 half-precision inference
         ):
-    save_img = not nosave and not source.endswith('.txt')  # save inference images
+    save_img = not nosave and not source.endswith(
+        '.txt')  # save inference images
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
         ('rtsp://', 'rtmp://', 'http://', 'https://'))
 
     # Directories
-    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-    (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
-
+    save_dir = increment_path(Path(project) / name,
+                              exist_ok=exist_ok)  # increment run
+    (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True,
+                                                          exist_ok=True)  # make dir
     # Initialize
     set_logging()
     device = select_device(device)
     half &= device.type != 'cpu'  # half precision only supported on CUDA
 
+
     # Load model
     w = weights[0] if isinstance(weights, list) else weights
-    classify, suffix, suffixes = False, Path(w).suffix.lower(), ['.pt', '.onnx', '.tflite', '.pb', '']
+    classify, suffix, suffixes = False, Path(w).suffix.lower(), [
+        '.pt', '.onnx', '.tflite', '.pb', '']
     check_suffix(w, suffixes)  # check weights have acceptable suffix
-    pt, onnx, tflite, pb, saved_model = (suffix == x for x in suffixes)  # backend booleans
+    pt, onnx, tflite, pb, saved_model = (
+        suffix == x for x in suffixes)  # backend booleans
     stride, names = 64, [f'class{i}' for i in range(1000)]  # assign defaults
     if pt:
         model = attempt_load(weights, map_location=device)  # load FP32 model
         stride = int(model.stride.max())  # model stride
-        names = model.module.names if hasattr(model, 'module') else model.names  # get class names
+        names = model.module.names if hasattr(
+            model, 'module') else model.names  # get class names
         if half:
             model.half()  # to FP16
         if classify:  # second-stage classifier
             modelc = load_classifier(name='resnet50', n=2)  # initialize
-            modelc.load_state_dict(torch.load('resnet50.pt', map_location=device)['model']).to(device).eval()
+            modelc.load_state_dict(torch.load('resnet50.pt', map_location=device)[
+                                   'model']).to(device).eval()
     elif onnx:
         check_requirements(('onnx', 'onnxruntime'))
         import onnxruntime
@@ -92,23 +187,31 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         import tensorflow as tf
         if pb:  # https://www.tensorflow.org/guide/migrate#a_graphpb_or_graphpbtxt
             def wrap_frozen_graph(gd, inputs, outputs):
-                x = tf.compat.v1.wrap_function(lambda: tf.compat.v1.import_graph_def(gd, name=""), [])  # wrapped import
+                x = tf.compat.v1.wrap_function(
+                    lambda: tf.compat.v1.import_graph_def(gd, name=""), [])  # wrapped import
                 return x.prune(tf.nest.map_structure(x.graph.as_graph_element, inputs),
                                tf.nest.map_structure(x.graph.as_graph_element, outputs))
 
             graph_def = tf.Graph().as_graph_def()
             graph_def.ParseFromString(open(w, 'rb').read())
-            frozen_func = wrap_frozen_graph(gd=graph_def, inputs="x:0", outputs="Identity:0")
+            frozen_func = wrap_frozen_graph(
+                gd=graph_def, inputs="x:0", outputs="Identity:0")
         elif saved_model:
             model = tf.keras.models.load_model(w)
         elif tflite:
-            interpreter = tf.lite.Interpreter(model_path=w)  # load TFLite model
+            interpreter = tf.lite.Interpreter(
+                model_path=w)  # load TFLite model
             interpreter.allocate_tensors()  # allocate
             input_details = interpreter.get_input_details()  # inputs
             output_details = interpreter.get_output_details()  # outputs
-            int8 = input_details[0]['dtype'] == np.uint8  # is TFLite quantized uint8 model
+            # is TFLite quantized uint8 model
+            int8 = input_details[0]['dtype'] == np.uint8
     imgsz = check_img_size(imgsz, s=stride)  # check image size
     ascii = is_ascii(names)  # names are ascii (use PIL for UTF-8)
+
+    # initialise hand tracker
+    hands = mp_hands.Hands(min_detection_confidence=0.5,
+                           min_tracking_confidence=0.5)
 
     # Dataloader
     if webcam:
@@ -123,10 +226,14 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
 
     # Run inference
     if pt and device.type != 'cpu':
-        model(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model.parameters())))  # run once
+        # run once
+        model(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model.parameters())))
     dt, seen = [0.0, 0.0, 0.0], 0
+
+    # process each image
     for path, img, im0s, vid_cap in dataset:
         t1 = time_sync()
+        img_copy = img.copy()
         if onnx:
             img = img.astype('float32')
         else:
@@ -140,10 +247,12 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
 
         # Inference
         if pt:
-            visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
+            visualize = increment_path(
+                save_dir / Path(path).stem, mkdir=True) if visualize else False
             pred = model(img, augment=augment, visualize=visualize)[0]
         elif onnx:
-            pred = torch.tensor(session.run([session.get_outputs()[0].name], {session.get_inputs()[0].name: img}))
+            pred = torch.tensor(session.run([session.get_outputs()[0].name], {
+                                session.get_inputs()[0].name: img}))
         else:  # tensorflow model (tflite, pb, saved_model)
             imn = img.permute(0, 2, 3, 1).cpu().numpy()  # image in numpy
             if pb:
@@ -159,7 +268,8 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                 pred = interpreter.get_tensor(output_details[0]['index'])
                 if int8:
                     scale, zero_point = output_details[0]['quantization']
-                    pred = (pred.astype(np.float32) - zero_point) * scale  # re-scale
+                    pred = (pred.astype(np.float32) -
+                            zero_point) * scale  # re-scale
             pred[..., 0] *= imgsz[1]  # x
             pred[..., 1] *= imgsz[0]  # y
             pred[..., 2] *= imgsz[1]  # w
@@ -169,8 +279,23 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         dt[1] += t3 - t2
 
         # NMS
-        pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+        pred = non_max_suppression(
+            pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
         dt[2] += time_sync() - t3
+
+        # ############################
+        #          Mediapipe
+        # ############################
+        flipped_image = cv2.cvtColor(im0s[0], cv2.COLOR_BGR2RGB)
+        # To improve performance, optionally mark the image as not writeable to
+        # pass by reference.
+        flipped_image.flags.writeable = False
+        # img_to_np = im0s[0].cpu().detach().numpy()
+        # print(im0s[0])
+        # print(img_to_np)
+        results = hands.process(flipped_image)
+
+        # print(results)
 
         # Second-stage classifier (optional)
         if classify:
@@ -180,46 +305,90 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         for i, det in enumerate(pred):  # per image
             seen += 1
             if webcam:  # batch_size >= 1
-                p, s, im0, frame = path[i], f'{i}: ', im0s[i].copy(), dataset.count
+                p, s, im0, frame = path[i], f'{i}: ', im0s[i].copy(
+                ), dataset.count
             else:
                 p, s, im0, frame = path, '', im0s.copy(), getattr(dataset, 'frame', 0)
 
+            '''
+            tensor([
+                [2.34448e+02, 2.73639e+02, 2.73603e+02, 3.40582e+02, 4.99048e-01, 6.70000e+01],
+                [1.04171e+02, 1.03227e+02, 5.52127e+02, 4.80520e+02, 4.41666e-01, 0.00000e+00]
+            ])
+            
+            0: 480x640 1 person, 1 cell phone, Done. (0.595s)
+            '''
+            # print(det)
+
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # img.jpg
-            txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
+            txt_path = str(save_dir / 'labels' / p.stem) + \
+                ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
             s += '%gx%g ' % img.shape[2:]  # print string
-            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+            # normalization gain whwh
+            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]
             imc = im0.copy() if save_crop else im0  # for save_crop
-            annotator = Annotator(im0, line_width=line_thickness, pil=not ascii)
+            annotator = Annotator(
+                im0, line_width=line_thickness, pil=not ascii)
+
             if len(det):
                 # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                det[:, :4] = scale_coords(
+                    img.shape[2:], det[:, :4], im0.shape).round()
+
+                # class_number: number of detections
+                detections = {}
 
                 # Print results
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # detections per class
-                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
+                    # add to string
+                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "
+                    detections[int(c.item())] = int(n.item())
+
+                # find_step(detections)
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
                     if save_txt:  # Write to file
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
+                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)
+                                          ) / gn).view(-1).tolist()  # normalized xywh
+                        # label format
+                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)
                         with open(txt_path + '.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
                     if save_img or save_crop or view_img:  # Add bbox to image
                         c = int(cls)  # integer class
-                        label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
+                        label = None if hide_labels else (
+                            names[c] if hide_conf else f'{names[c]} {conf:.2f}')
                         annotator.box_label(xyxy, label, color=colors(c, True))
                         if save_crop:
-                            save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+                            save_one_box(
+                                xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
 
             # Print time (inference-only)
             print(f'{s}Done. ({t3 - t2:.3f}s)')
 
+            # show steps
+            # show_steps(image=im0)
+
+            # draw hand landmarks
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    # print(hand_landmarks)
+                    mp_drawing.draw_landmarks(
+                        im0,
+                        hand_landmarks,
+                        mp_hands.HAND_CONNECTIONS,
+                        mp_drawing_styles.get_default_hand_landmarks_style(),
+                        mp_drawing_styles.get_default_hand_connections_style()
+                    )
+
             # Stream results
             im0 = annotator.result()
+
+
             if view_img:
                 cv2.imshow(str(p), im0)
                 cv2.waitKey(1)  # 1 millisecond
@@ -232,7 +401,8 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                     if vid_path[i] != save_path:  # new video
                         vid_path[i] = save_path
                         if isinstance(vid_writer[i], cv2.VideoWriter):
-                            vid_writer[i].release()  # release previous video writer
+                            # release previous video writer
+                            vid_writer[i].release()
                         if vid_cap:  # video
                             fps = vid_cap.get(cv2.CAP_PROP_FPS)
                             w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -240,12 +410,14 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                         else:  # stream
                             fps, w, h = 30, im0.shape[1], im0.shape[0]
                             save_path += '.mp4'
-                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                        vid_writer[i] = cv2.VideoWriter(
+                            save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
 
-    # Print results
+    #? Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
-    print(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
+    print(
+        f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
     if save_txt or save_img:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         print(f"Results saved to {colorstr('bold', save_dir)}{s}")
@@ -255,30 +427,53 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default='yolov5s.pt', help='model path(s)')
-    parser.add_argument('--source', type=str, default='data/images', help='file/dir/URL/glob, 0 for webcam')
-    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
-    parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--weights', nargs='+', type=str,
+                        default='yolov5s.pt', help='model path(s)')
+    parser.add_argument('--source', type=str, default='data/images',
+                        help='file/dir/URL/glob, 0 for webcam')
+    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+',
+                        type=int, default=[640], help='inference size h,w')
+    parser.add_argument('--conf-thres', type=float,
+                        default=0.25, help='confidence threshold')
+    parser.add_argument('--iou-thres', type=float,
+                        default=0.45, help='NMS IoU threshold')
+    parser.add_argument('--max-det', type=int, default=1000,
+                        help='maximum detections per image')
+    parser.add_argument('--device', default='',
+                        help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
-    parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
-    parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
-    parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
-    parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
-    parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --class 0, or --class 0 2 3')
-    parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
-    parser.add_argument('--augment', action='store_true', help='augmented inference')
-    parser.add_argument('--visualize', action='store_true', help='visualize features')
-    parser.add_argument('--update', action='store_true', help='update all models')
-    parser.add_argument('--project', default='runs/detect', help='save results to project/name')
-    parser.add_argument('--name', default='exp', help='save results to project/name')
-    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
-    parser.add_argument('--line-thickness', default=3, type=int, help='bounding box thickness (pixels)')
-    parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
-    parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
-    parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
+    parser.add_argument('--save-txt', action='store_true',
+                        help='save results to *.txt')
+    parser.add_argument('--save-conf', action='store_true',
+                        help='save confidences in --save-txt labels')
+    parser.add_argument('--save-crop', action='store_true',
+                        help='save cropped prediction boxes')
+    parser.add_argument('--nosave', action='store_true',
+                        help='do not save images/videos')
+    parser.add_argument('--classes', nargs='+', type=int,
+                        help='filter by class: --class 0, or --class 0 2 3')
+    parser.add_argument('--agnostic-nms', action='store_true',
+                        help='class-agnostic NMS')
+    parser.add_argument('--augment', action='store_true',
+                        help='augmented inference')
+    parser.add_argument('--visualize', action='store_true',
+                        help='visualize features')
+    parser.add_argument('--update', action='store_true',
+                        help='update all models')
+    parser.add_argument('--project', default='runs/detect',
+                        help='save results to project/name')
+    parser.add_argument('--name', default='exp',
+                        help='save results to project/name')
+    parser.add_argument('--exist-ok', action='store_true',
+                        help='existing project/name ok, do not increment')
+    parser.add_argument('--line-thickness', default=3,
+                        type=int, help='bounding box thickness (pixels)')
+    parser.add_argument('--hide-labels', default=False,
+                        action='store_true', help='hide labels')
+    parser.add_argument('--hide-conf', default=False,
+                        action='store_true', help='hide confidences')
+    parser.add_argument('--half', action='store_true',
+                        help='use FP16 half-precision inference')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     print_args(FILE.stem, opt)

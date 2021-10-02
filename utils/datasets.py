@@ -343,6 +343,8 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
         # Letterbox
         img0 = self.imgs.copy()
+
+        # print(img)
         img = [letterbox(x, self.img_size, stride=self.stride, auto=self.rect and self.auto)[0] for x in img0]
 
         # Stack
@@ -352,6 +354,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
         img = img[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW
         img = np.ascontiguousarray(img)
 
+        #      path,         img, im0s, vid_cap in detect.py
         return self.sources, img, img0, None
 
     def __len__(self):
