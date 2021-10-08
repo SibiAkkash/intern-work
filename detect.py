@@ -4,6 +4,7 @@ Run inference on images, videos, directories, streams, etc.
 
 Usage:
     $ python path/to/detect.py --source path/to/img.jpg --weights yolov5s.pt --img 640
+    python3 .\detect.py --source 0 --weights yolov5s.pt --conf 0.25 --view-img --class 65 67 76 --device 0
 """
 
 from utils.torch_utils import load_classifier, select_device, time_sync
@@ -104,6 +105,7 @@ def show_steps(image):
         pt2=RECT_POINT_2,
         thickness=-1
     )
+
     # steps status
     for step in range(1, 4):
         cv2.putText(
@@ -157,7 +159,6 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
     set_logging()
     device = select_device(device)
     half &= device.type != 'cpu'  # half precision only supported on CUDA
-
 
     # Load model
     w = weights[0] if isinstance(weights, list) else weights
@@ -233,7 +234,6 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
     # process each image
     for path, img, im0s, vid_cap in dataset:
         t1 = time_sync()
-        img_copy = img.copy()
         if onnx:
             img = img.astype('float32')
         else:
@@ -371,7 +371,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
             print(f'{s}Done. ({t3 - t2:.3f}s)')
 
             # show steps
-            # show_steps(image=im0)
+            show_steps(im0)
 
             # draw hand landmarks
             if results.multi_hand_landmarks:
@@ -387,7 +387,6 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
 
             # Stream results
             im0 = annotator.result()
-
 
             if view_img:
                 cv2.imshow(str(p), im0)
@@ -414,7 +413,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                             save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
 
-    #? Print results
+    # ? Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
     print(
         f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)

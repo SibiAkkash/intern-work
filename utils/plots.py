@@ -95,7 +95,7 @@ class Annotator:
                 cv2.putText(self.im, label, (c1[0], c1[1] - 2), 0, self.lw / 3, txt_color, thickness=tf,
                             lineType=cv2.LINE_AA)
 
-    def rectangle(self, xy, fill=None, outline=None, width=1):
+    def rectangle(self, xy, fill=None, outline=None, width=1): 
         # Add rectangle to image (PIL-only)
         self.draw.rectangle(xy, fill, outline, width)
 
