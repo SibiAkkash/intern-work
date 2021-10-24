@@ -355,7 +355,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
         img = np.ascontiguousarray(img)
 
         #*      path,         img, im0s, vid_cap in detect.py
-        return self.sources, img, img0, None
+        return (self.sources, img, img0, None)
 
     def __len__(self):
         return len(self.sources)  # 1E12 frames = 32 streams at 30 FPS for 30 years
