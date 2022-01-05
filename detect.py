@@ -3,10 +3,10 @@
 Run inference on images, videos, directories, streams, etc.
 
 Usage:
-    $ python path/to/detect.py --source path/to/img.jpg --weights yolov5s.pt --img 640
     python3 .\detect.py --source 0 --weights yolov5s.pt --conf 0.25 --view-img --class 65 67 76 --device 0
 """
 
+from datetime import time
 from utils.torch_utils import load_classifier, select_device, time_sync
 from utils.plots import Annotator, colors
 from utils.general import (
@@ -36,30 +36,19 @@ import cv2
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
-import mediapipe as mp
-
+# import mediapipe as mp
 from frozendict import frozendict
+
+import mysql.connector
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 
-
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
-mp_hands = mp.solutions.hands
-
-# step 1: 1 cellphone
-# step 2: 1 cellphone, 1 remote
-# step 3: 1 cellphone, 1 remote, 1 scissor
-
-state = {
-    "prev_step": 0,
-    "step_1_completed": False,
-    "step_2_completed": False,
-    "step_3_completed": False,
-}
+# start timer at first frame
+# when state changes, stop timer, note time taken
+# reset timer
 
 CELL_PHONE_ID = 67
 REMOTE_ID = 65
@@ -67,18 +56,42 @@ SCISSORS_ID = 76
 DONE_COLOUR = (6, 201, 65)
 NOT_DONE_COLOUR = (255, 255, 255)
 
+NUM_STEPS = 3
+
 X_OFFSET = 30
-Y_OFFSET = 350
+Y_OFFSET = 200
 Y_PADDING = 80
 RECT_POINT_1 = (X_OFFSET - 60, Y_OFFSET - 60)
-RECT_POINT_2 = (300, Y_OFFSET + (Y_PADDING * 2) + 60)
+RECT_POINT_2 = (800, Y_OFFSET + (Y_PADDING * 2) + 60)
+
+state = {
+    "prev_step": 0,
+    "state_changed": False,
+    "step_start_frame_num": 0,
+    "step_end_frame_num": 0,
+    "step_1_completed": False,
+    "step_2_completed": False,
+    "step_3_completed": False,
+    "cycle_times": [0] * NUM_STEPS
+}
+
+db_connection_config = {
+    "user": "sibi",
+    "password": "pass1234",
+    "host": "localhost",
+    "database": "test_db"
+}
+
+# step 1: 1 cellphone
+# step 2: 1 cellphone, 1 remote
+# step 3: 1 cellphone, 1 remote, 1 scissor
 
 step_1 = frozendict({CELL_PHONE_ID: 1, REMOTE_ID: 0, SCISSORS_ID: 0})
 step_2 = frozendict({CELL_PHONE_ID: 1, REMOTE_ID: 1, SCISSORS_ID: 0})
 step_3 = frozendict({CELL_PHONE_ID: 1, REMOTE_ID: 1, SCISSORS_ID: 1})
 
 
-def find_step(detections):
+def find_step(detections, frame_num, total_frames, fps):
     step = -1
 
     num_cellphones = detections[CELL_PHONE_ID] if CELL_PHONE_ID in detections else 0
@@ -95,10 +108,25 @@ def find_step(detections):
     if step == -1:
         return
 
+    state_changed = step == state["prev_step"] + 1
+
     # check if chronological ordering is maintained
-    if step == state["prev_step"] + 1:
+    if state_changed:
         state["prev_step"] = step
         state[f"step_{step}_completed"] = True
+        # previous step ends here
+        state["step_end_frame_num"] = frame_num
+
+        start_frame, end_frame = state["step_start_frame_num"], state["step_end_frame_num"]
+        time_taken = 1000.0 * (end_frame - start_frame) / fps
+        print(f'Time taken to complete step {step}: {time_taken} ms')
+        state["cycle_times"][step - 1] = round(time_taken, 2)
+
+        # set start frame number for next step
+        if step <= NUM_STEPS and frame_num < total_frames:
+            state["step_start_frame_num"] = frame_num + 1
+    
+    state["state_changed"] = state_changed
 
 
 def show_steps(image):
@@ -115,12 +143,12 @@ def show_steps(image):
     for step in range(1, 4):
         cv2.putText(
             img=image,
-            text=f"Step {step}",
+            text=f"Step {step}, time_taken: {state['cycle_times'][step - 1]} ms",
             org=(X_OFFSET, Y_OFFSET + Y_PADDING * (step - 1)),
             fontFace=0,
-            fontScale=2,
+            fontScale=1,
             color=DONE_COLOUR if state[f"step_{step}_completed"] else NOT_DONE_COLOUR,
-            thickness=6,
+            thickness=2,
         )
 
 
@@ -151,6 +179,7 @@ def run(
     hide_conf=False,  # hide confidences
     half=False,  # use FP16 half-precision inference
 ):
+
     save_img = not nosave and not source.endswith(".txt")  # save inference images
     webcam = (
         source.isnumeric()
@@ -231,8 +260,6 @@ def run(
     imgsz = check_img_size(imgsz, s=stride)  # check image size
     ascii = is_ascii(names)  # names are ascii (use PIL for UTF-8)
 
-    # initialise hand tracker
-    hands = mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
     # Dataloader
     if webcam:
@@ -253,8 +280,9 @@ def run(
     dt, seen = [0.0, 0.0, 0.0], 0
 
     # process each image
-    #  self.sources, img, img0, None)
+    #  self.sources, img, img0, None
     for path, img, im0s, vid_cap in dataset:
+        fps = vid_cap.get(cv2.CAP_PROP_FPS)
         t1 = time_sync()
         if onnx:
             img = img.astype("float32")
@@ -311,23 +339,10 @@ def run(
         )
         dt[2] += time_sync() - t3
 
-        # #####################  Mediapipe  #######################
-
-        flipped_image = cv2.cvtColor(im0s[0], cv2.COLOR_BGR2RGB)
-        # To improve performance, optionally mark the image as not writeable to
-        # pass by reference.
-        flipped_image.flags.writeable = False
-        # img_to_np = im0s[0].cpu().detach().numpy()
-        # print(im0s[0])
-        # print(img_to_np)
-        results = hands.process(flipped_image)
-        # print(results.multi_hand_landmarks)
-
-        # #########################################################
-
         # Second-stage classifier (optional)
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
+
 
         # Process predictions
         for i, det in enumerate(pred):  # per image
@@ -336,7 +351,6 @@ def run(
                 p, s, im0, frame = path[i], f"{i}: ", im0s[i].copy(), dataset.count
             else:
                 p, s, im0, frame = path, "", im0s.copy(), getattr(dataset, "frame", 0)
-
             """
             detection format: [top_left_x, top_left_y, bottom_right_x, bottom_right_y, confidence, class]
             pred = tensor([detection], [detection], ...)
@@ -369,81 +383,35 @@ def run(
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "
                     detections[int(c.item())] = int(n.item())
 
-                # find_step(detections)
-
-                # * x and y are normalized to [0.0, 1.0] by the image width and height respectively
-
-                width, height = im0.shape[1], im0.shape[0]
-
-                for *xyxy, conf, cls in reversed(det):
-                    x_top_left, y_top_left, x_bottom_right, y_bottom_right = list(
-                        map(lambda t: int(t.item()), xyxy)
-                    )
-                    c = int(cls)  # integer class
-                    label = (
-                        None
-                        if hide_labels
-                        else (names[c] if hide_conf else f"{names[c]} {conf:.2f}")
-                    )
-
-                    is_colliding = False
-
-                    # check if bbox contains any fingertip within it (left or right hand)
-                    if results.multi_hand_landmarks:
-                        for hand_landmarks in results.multi_hand_landmarks:
-                            # index finger tip coords
-                            # hand landmark indices:
-                            for idx in [4, 8, 12, 16, 20]:
-                                tip_x = hand_landmarks.landmark[idx].x * width
-                                tip_y = hand_landmarks.landmark[idx].y * height
-
-                                if (
-                                    x_top_left <= tip_x <= x_bottom_right
-                                    and y_top_left <= tip_y <= y_bottom_right
-                                ):
-                                    # index fingertip inside bbox, color in red
-                                    is_colliding = True
-                                    break
-
-                    if is_colliding:
-                        annotator.box_label(xyxy, label, color=(0, 0, 255))
-                    else:
-                        annotator.box_label(xyxy, label, color=(0, 255, 0))
-
+                find_step(detections=detections, frame_num=dataset.frame, total_frames=dataset.frames, fps=fps)
+                    
                 # Write results
-                # for *xyxy, conf, cls in reversed(det):
-                #     print(xyxy, conf, cls)
+                for *xyxy, conf, cls in reversed(det):
+                    # print(xyxy, conf, cls)
 
-                #     if save_txt:  # Write to file
-                #         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)
-                #                           ) / gn).view(-1).tolist()  # normalized xywh
-                #         # label format
-                #         line = (cls, *xywh, conf) if save_conf else (cls, *xywh)
-                #         with open(txt_path + '.txt', 'a') as f:
-                #             f.write(('%g ' * len(line)).rstrip() % line + '\n')
+                    if save_txt:  # Write to file
+                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)
+                                          ) / gn).view(-1).tolist()  # normalized xywh
+                        # label format
+                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)
+                        with open(txt_path + '.txt', 'a') as f:
+                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
-                #     if save_img or save_crop or view_img:  # Add bbox to image
-                #         c = int(cls)  # integer class
-                #         label = None if hide_labels else (
-                #             names[c] if hide_conf else f'{names[c]} {conf:.2f}')
-                #         annotator.box_label(xyxy, label, color=colors(c, True))
-                #         if save_crop:
-                #             save_one_box(
-                #                 xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+                    if save_img or save_crop or view_img:  # Add bbox to image
+                        c = int(cls)  # integer class
+                        label = None if hide_labels else (
+                            names[c] if hide_conf else f'{names[c]} {conf:.2f}')
+                        annotator.box_label(xyxy, label, color=colors(c, True))
+                        if save_crop:
+                            save_one_box(
+                                xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
 
+            
+            # if state changed
+            # print(f'{state["state_changed"] = }')
+            
             # * show steps
-            # show_steps(im0)
-
-            # draw hand landmarks
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    mp_drawing.draw_landmarks(
-                        im0,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_drawing_styles.get_default_hand_landmarks_style(),
-                        mp_drawing_styles.get_default_hand_connections_style(),
-                    )
+            show_steps(im0)
 
             # Print time (inference-only)
             print(f"{s}Done. ({t3 - t2:.3f}s)")
@@ -453,9 +421,7 @@ def run(
 
             if view_img:
                 cv2.imshow(str(p), im0)
-                cv2.waitKey(1)
-                # if cv2.waitKey(1) == ord('q'):
-                #     break  # 1 millisecond
+                cv2.waitKey(5)
 
             # Save results (image with detections)
             if save_img:
@@ -494,6 +460,20 @@ def run(
         print(f"Results saved to {colorstr('bold', save_dir)}{s}")
     if update:
         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
+
+    # write cycle times to db
+    cursor = cnx.cursor()
+    add_times = ("INSERT INTO emp_perf "
+                "(emp_id, task_1_cycle_time_ms, task_2_cycle_time_ms, task_3_cycle_time_ms) "
+                "VALUES (%s, %s, %s, %s)")
+    
+    data_times = (2, *state["cycle_times"])
+    cursor.execute(add_times, data_times)
+
+    cnx.commit()
+    
+    cursor.close()
+
 
 
 def parse_opt():
@@ -579,10 +559,12 @@ def parse_opt():
 
 
 def main(opt):
-    check_requirements(exclude=("tensorboard", "thop"))
+    # check_requirements(exclude=("tensorboard", "thop"))
     run(**vars(opt))
 
 
 if __name__ == "__main__":
     opt = parse_opt()
+    cnx = mysql.connector.connect(**db_connection_config)
     main(opt)
+    cnx.close()
