@@ -138,7 +138,6 @@ def show_steps(image):
         pt2=RECT_POINT_2,
         thickness=-1,
     )
-
     # steps status
     for step in range(1, 4):
         cv2.putText(
@@ -280,7 +279,7 @@ def run(
     dt, seen = [0.0, 0.0, 0.0], 0
 
     # process each image
-    #  self.sources, img, img0, None
+    # self.sources, img, img0, None
     for path, img, im0s, vid_cap in dataset:
         fps = vid_cap.get(cv2.CAP_PROP_FPS)
         t1 = time_sync()
