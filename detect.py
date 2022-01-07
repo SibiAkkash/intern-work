@@ -6,7 +6,10 @@ Usage:
     python3 .\detect.py --source 0 --weights yolov5s.pt --conf 0.25 --view-img --class 65 67 76 --device 0
 """
 
-from datetime import time
+# from datetime import time
+import time
+
+from PIL.Image import init
 from utils.torch_utils import load_classifier, select_device, time_sync
 from utils.plots import Annotator, colors
 from utils.general import (
@@ -40,6 +43,7 @@ import torch.backends.cudnn as cudnn
 from frozendict import frozendict
 from pprint import pprint
 import mysql.connector
+from typing import List, Sequence
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
@@ -47,6 +51,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 
 
+MOUSE_ID = 64
 REMOTE_ID = 65
 KEYBOARD_ID = 66
 CELL_PHONE_ID = 67
@@ -56,17 +61,12 @@ SCISSORS_ID = 76
 DONE_COLOUR = (6, 201, 65)
 NOT_DONE_COLOUR = (255, 255, 255)
 
-X_OFFSET = 30
-Y_OFFSET = 50
-Y_PADDING = 80
-RECT_POINT_1 = (X_OFFSET - 60, Y_OFFSET - 60)
-RECT_POINT_2 = (800, Y_OFFSET + (Y_PADDING * 3) + 60)
 
 db_connection_config = {
     "user": "sibi",
     "password": "pass1234",
     "host": "localhost",
-    "database": "test_db"
+    "database": "test_db",
 }
 
 # we get steps from db
@@ -75,9 +75,16 @@ db_connection_config = {
 # process_steps = [CELL_PHONE_ID, REMOTE_ID, SCISSORS_ID]
 process_steps = [CELL_PHONE_ID, REMOTE_ID, SCISSORS_ID]
 start_marker_object_id = KEYBOARD_ID
-end_marker_object_id = BOOK_ID
+end_marker_object_id = MOUSE_ID
 
 NUM_STEPS = len(process_steps)
+
+X_OFFSET = 30
+Y_OFFSET = 30
+Y_PADDING = 25
+RECT_POINT_1 = (X_OFFSET - 60, Y_OFFSET - 60)
+RECT_POINT_1 = (10, 10)
+RECT_POINT_2 = (300, (Y_PADDING * (NUM_STEPS + 2)))
 
 # ----------------- FLOW -------------------------------------------------------------------------------------
 # start of cycle is presence of start marker
@@ -87,35 +94,64 @@ NUM_STEPS = len(process_steps)
 # Step order doesnt matter, cycle start and end is based on presence of start and end marker respectively.
 # ------------------------------------------------------------------------------------------------------------
 
+state = {}
+cycle_seqs = []
 
-state = {
-    "prev_step": -1,
-    "seen_objects": [],
+def init_state():
+    global state
+    state = {
+        "prev_step": -1,
+        "seen_objects": [],
+        "num_steps_completed": 0,
+        "cycle_started": False,
+        "cycle_ended": False,
+        "steps_started": False,
+        "steps_completed": False,
+        "cycle_start_frame_num": 0,
+        "cycle_end_frame_num": 0,
+        "step_start_frame_num": 0,
+        "step_end_frame_num": 0,
+        "is_step_completed": [False] * NUM_STEPS,
+        "step_times": [0] * NUM_STEPS,
+        "sequence": [],
+    }
 
-    "num_steps_completed": 0,
 
-    "cycle_started": False,
-    "cycle_ended": False,
-    "steps_started": False,
-    "process_completed": False,
 
-    # "state_changed": False,
-    "cycle_start_frame_num": 0,
-    "cycle_end_frame_num": 0,
-    "step_start_frame_num": 0,
-    "step_end_frame_num": 0,
+def show_steps(image):
+    # box background
+    cv2.rectangle(
+        img=image,
+        color=(100, 100, 100),
+        pt1=RECT_POINT_1,
+        pt2=RECT_POINT_2,
+        thickness=-1,
+    )
+    # steps status
+    for step in range(NUM_STEPS + 1):
+        if step == NUM_STEPS:
+            s = f"Sequence: {state['sequence']}"
+            color = DONE_COLOUR if state['cycle_ended'] else NOT_DONE_COLOUR
+        else:
+            s = f"Step {step + 1}, time taken: {state['step_times'][step]} ms"
+            color = DONE_COLOUR if state["is_step_completed"][step] else NOT_DONE_COLOUR
 
-    "is_step_completed": [False] * NUM_STEPS,
-    "step_times": [0] * NUM_STEPS,
-    "sequence": [],
-}
+        cv2.putText(
+            img=image,
+            text=s,
+            org=(X_OFFSET, Y_OFFSET + Y_PADDING * step),
+            fontFace=0,
+            fontScale=0.5,
+            color=color,
+            thickness=1,
+        )
 
-def get_time_elapsed_ms(start_frame, end_frame, fps):
+def get_time_elapsed_ms(start_frame: int, end_frame: int, fps: float):
     return 1000.0 * (end_frame - start_frame) / fps
 
 
-def get_step_number(detections, frame_num, total_frames, fps):
-    """ if list contains objects we havent seen, return the step number and object id """
+def get_step_number(detections: List[int]):
+    """if list contains objects we havent seen, return the step number and object id"""
     # TODO this assumes we will only see 1 new object from the previous frame
     for object_id in detections:
         # return (step number, object_id) if we see a new object that we haven't seen yet
@@ -123,8 +159,15 @@ def get_step_number(detections, frame_num, total_frames, fps):
             return process_steps.index(object_id), object_id
 
     return -1, -1
-    
-def handle_state_change(next_step_num, next_object_id, frame_num, fps, is_last_step=False):
+
+
+def handle_state_change(
+    frame_num: int,
+    fps: int,
+    next_step_num: int = -1,
+    next_object_id: int = -1,
+    is_last_step: bool = False,
+):
 
     # check if this is the first object other than the start marker
     if len(state["seen_objects"]) == 1:
@@ -144,103 +187,91 @@ def handle_state_change(next_step_num, next_object_id, frame_num, fps, is_last_s
         state["step_end_frame_num"] = frame_num
 
         # calculate cycle time for the previous step
-        time_taken = get_time_elapsed_ms(state["step_start_frame_num"], state["step_end_frame_num"], fps)
-        print(f'Time taken to complete step {prev_step}: {time_taken} ms')
+        time_taken = get_time_elapsed_ms(
+            state["step_start_frame_num"], state["step_end_frame_num"], fps
+        )
+        print(f"Time taken to complete step {prev_step}: {time_taken} ms")
         state["step_times"][prev_step] = round(time_taken, 2)
-        
+
         state["is_step_completed"][prev_step] = True
         state["sequence"].append(prev_step)
         state["num_steps_completed"] += 1
 
-        if not is_last_step:
-            # set start frame number for next step
-            # if next_step_num <= NUM_STEPS and frame_num < total_frames:
-            state["step_start_frame_num"] = frame_num + 1
+        # if not is_last_step:
+        # set start frame number for next step
+        state["step_start_frame_num"] = frame_num + 1
 
-            # set prev_step to the current step
-            state["prev_step"] = next_step_num
+        # set prev_step to the current step
+        state["prev_step"] = next_step_num
 
-            state["seen_objects"].append(next_object_id)
+        state["seen_objects"].append(next_object_id)
 
-    
     pprint(state)
 
 
-
-
-def is_object_present(detections, object_id):
+def is_object_present(detections: List[int], object_id: int):
     return object_id in detections
 
 
-def handle_cycle_start(detections, frame_num):
+def handle_cycle_start(detections: List[int], frame_num: int):
     if start_marker_object_id in detections:
         state["cycle_started"] = True
         state["cycle_start_frame_num"] = frame_num
         state["seen_objects"].append(start_marker_object_id)
-        print("CYCYLE STARTED")
+        print("CYCLE STARTED")
 
 
-def handle_cycle_end(frame_num, fps):
+def handle_cycle_end(frame_num: int, fps: float):
     if state["prev_step"] != -1:
-        handle_state_change(frame_num=frame_num, fps=fps, is_last_step=True)
+        handle_state_change(frame_num=frame_num, fps=fps)
     
-    state["cycle_ended"] = True
-    state["cycle_ended_frame_num"] = frame_num
-    print("CYCYLE ENDED")
-    # TODO refresh state
+    cycle_seqs.append(state['sequence'])
+    
+    # refresh state
+    init_state()
+    # time.sleep(0.2)
+    # state["cycle_ended"] = True
+    # state["cycle_ended_frame_num"] = frame_num
+    print("CYCLE ENDED")
+    pprint(state)
+    
+
+
 
 # number of steps, step configuration is in db, make query to get data
-def check_step(detections, frame_num, total_frames, fps):
-    # test for one cycle now
-    if state["cycle_ended"]:
-        return
-
+def check_step(detections: List[int], frame_num: int, fps: float):
     # we have seen the start marker
     # the next frame, we dont have to check for cycle start again, it has started already
     if not state["cycle_started"]:
-            if is_object_present(detections, start_marker_object_id):
-                handle_cycle_start(detections, frame_num)
-                pprint(state)
+        if is_object_present(detections, start_marker_object_id):
+            handle_cycle_start(detections, frame_num)
+            pprint(state)
 
     if not state["cycle_started"]:
         return
 
     if is_object_present(detections, end_marker_object_id):
         handle_cycle_end(frame_num, fps)
+        pprint(cycle_seqs)
+        return
 
     # cycle started, we see a object(the start marker could still be in frame) that is not the end marker
     # check if there is an object other than previously seen objects (including start marker)
-    next_step_num, next_object_id = get_step_number(detections, frame_num, total_frames, fps)
+    next_step_num, next_object_id = get_step_number(detections)
     # print(type(next_object_id))
     # we havent seen a new object yet
     if next_step_num == -1:
         return
 
-    print(f'next_step_num: {next_step_num}')
+    print(f"next_step_num: {next_step_num}")
 
-    handle_state_change(next_step_num, next_object_id, frame_num, fps, is_last_step=False)
-
-
-def show_steps(image):
-    # box background
-    cv2.rectangle(
-        img=image,
-        color=(100, 100, 100),
-        pt1=RECT_POINT_1,
-        pt2=RECT_POINT_2,
-        thickness=-1,
+    handle_state_change(
+        next_step_num=next_step_num,
+        next_object_id=next_object_id,
+        frame_num=frame_num,
+        fps=fps,
+        is_last_step=False,
     )
-    # steps status
-    for step in range(NUM_STEPS):
-        cv2.putText(
-            img=image,
-            text=f"Step {step + 1}, time_taken: {state['step_times'][step]} ms",
-            org=(X_OFFSET, Y_OFFSET + Y_PADDING * (step)),
-            fontFace=0,
-            fontScale=1,
-            color=DONE_COLOUR if state["is_step_completed"][step] else NOT_DONE_COLOUR,
-            thickness=2,
-        )
 
 
 @torch.no_grad()
@@ -351,7 +382,6 @@ def run(
     imgsz = check_img_size(imgsz, s=stride)  # check image size
     ascii = is_ascii(names)  # names are ascii (use PIL for UTF-8)
 
-
     # Dataloader
     if webcam:
         view_img = check_imshow()
@@ -373,7 +403,10 @@ def run(
     # process each image
     # self.sources, img, img0, None
     for path, img, im0s, vid_cap in dataset:
-        fps = vid_cap.get(cv2.CAP_PROP_FPS)
+        # fps = vid_cap.get(cv2.CAP_PROP_FPS)
+        fps = dataset.fps[0]
+        frame_num = dataset.count
+
         t1 = time_sync()
         if onnx:
             img = img.astype("float32")
@@ -434,7 +467,6 @@ def run(
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
 
-
         # Process predictions
         for i, det in enumerate(pred):  # per image
             seen += 1
@@ -476,35 +508,47 @@ def run(
                     detections[int(c.item())] = int(n.item())
                     det_list.append(int(c.item()))
 
-                check_step(detections=det_list, frame_num=dataset.frame, total_frames=dataset.frames, fps=fps)
-                    
+                # For video
+                # check_step(detections=det_list, frame_num=dataset.frame, total_frames=dataset.frames, fps=fps)
+                # For webcam
+                check_step(detections=det_list, frame_num=frame_num, fps=fps)
+
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
                     # print(xyxy, conf, cls)
 
                     if save_txt:  # Write to file
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)
-                                          ) / gn).view(-1).tolist()  # normalized xywh
+                        xywh = (
+                            (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn)
+                            .view(-1)
+                            .tolist()
+                        )  # normalized xywh
                         # label format
                         line = (cls, *xywh, conf) if save_conf else (cls, *xywh)
-                        with open(txt_path + '.txt', 'a') as f:
-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
+                        with open(txt_path + ".txt", "a") as f:
+                            f.write(("%g " * len(line)).rstrip() % line + "\n")
 
                     if save_img or save_crop or view_img:  # Add bbox to image
                         c = int(cls)  # integer class
-                        label = None if hide_labels else (
-                            names[c] if hide_conf else f'{names[c]} {conf:.2f}')
+                        label = (
+                            None
+                            if hide_labels
+                            else (names[c] if hide_conf else f"{names[c]} {conf:.2f}")
+                        )
                         annotator.box_label(xyxy, label, color=colors(c, True))
                         if save_crop:
                             save_one_box(
-                                xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+                                xyxy,
+                                imc,
+                                file=save_dir / "crops" / names[c] / f"{p.stem}.jpg",
+                                BGR=True,
+                            )
 
-            
             # * show steps
             show_steps(im0)
 
             # Print time (inference-only)
-            print(f"{s}Done. ({t3 - t2:.3f}s)")
+            # print(f"{s}Done. ({t3 - t2:.3f}s)")
 
             # Stream results
             im0 = annotator.result()
@@ -551,7 +595,6 @@ def run(
     if update:
         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
 
-    
     pprint(state)
 
     # write cycle times to db
@@ -559,12 +602,11 @@ def run(
     # add_times = ("INSERT INTO emp_perf "
     #             "(emp_id, task_1_cycle_time_ms, task_2_cycle_time_ms, task_3_cycle_time_ms) "
     #             "VALUES (%s, %s, %s, %s)")
-    
+
     # data_times = (2, *state["step_times"])
     # cursor.execute(add_times, data_times)
     # cnx.commit()
     # cursor.close()
-
 
 
 def parse_opt():
@@ -656,6 +698,7 @@ def main(opt):
 
 if __name__ == "__main__":
     opt = parse_opt()
+    init_state()
     # cnx = mysql.connector.connect(**db_connection_config)
     main(opt)
     # cnx.close()
