@@ -36,12 +36,9 @@ import cv2
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
-# import mediapipe as mp
+
 from frozendict import frozendict
-
 from pprint import pprint
-
-
 import mysql.connector
 
 FILE = Path(__file__).resolve()
@@ -49,13 +46,11 @@ ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 
-# start timer at first frame
-# when state changes, stop timer, note time taken
-# reset timer
 
 REMOTE_ID = 65
 KEYBOARD_ID = 66
 CELL_PHONE_ID = 67
+BOOK_ID = 73
 SCISSORS_ID = 76
 
 DONE_COLOUR = (6, 201, 65)
@@ -77,114 +72,153 @@ db_connection_config = {
 # we get steps from db
 # steps = list of labels (index of label is the step number)
 # TODO assuming there cannot be duplicate labels (different steps cannot have same object)
-# step 1: cellphone
-# step 2: remote
-# step 3: scissor
 # process_steps = [CELL_PHONE_ID, REMOTE_ID, SCISSORS_ID]
-process_steps = [KEYBOARD_ID, CELL_PHONE_ID, REMOTE_ID, SCISSORS_ID]
+process_steps = [CELL_PHONE_ID, REMOTE_ID, SCISSORS_ID]
+start_marker_object_id = KEYBOARD_ID
+end_marker_object_id = BOOK_ID
 
 NUM_STEPS = len(process_steps)
-# timer starts when we see the object corresponding to first step
-# when we see a different object, the first step has ended, a new step has started
-# when we see see the object corresponding to last step, we can stop. We dont know how the last step ends right now
-start_step_object_id = process_steps[0]
-end_step_object_id = process_steps[-1]
+
+# ----------------- FLOW -------------------------------------------------------------------------------------
+# start of cycle is presence of start marker
+# start of step is presence of corresponding bounding box
+# when we see a new bounding box, the previous step is over, calculate time taken
+# if this new bounding box is the end marker, the cycle has finished, refresh state
+# Step order doesnt matter, cycle start and end is based on presence of start and end marker respectively.
+# ------------------------------------------------------------------------------------------------------------
 
 
 state = {
     "prev_step": -1,
     "seen_objects": [],
+
     "num_steps_completed": 0,
-    "process_started": False,
+
+    "cycle_started": False,
+    "cycle_ended": False,
+    "steps_started": False,
     "process_completed": False,
+
     # "state_changed": False,
+    "cycle_start_frame_num": 0,
+    "cycle_end_frame_num": 0,
     "step_start_frame_num": 0,
     "step_end_frame_num": 0,
+
     "is_step_completed": [False] * NUM_STEPS,
-    "cycle_times": [0] * NUM_STEPS
+    "step_times": [0] * NUM_STEPS,
+    "sequence": [],
 }
+
+def get_time_elapsed_ms(start_frame, end_frame, fps):
+    return 1000.0 * (end_frame - start_frame) / fps
 
 
 def get_step_number(detections, frame_num, total_frames, fps):
-    # if list contains objects we havent seen, return the step of that object
+    """ if list contains objects we havent seen, return the step number and object id """
     # TODO this assumes we will only see 1 new object from the previous frame
-    for det in detections:
+    for object_id in detections:
         # return (step number, object_id) if we see a new object that we haven't seen yet
-        if det not in state["seen_objects"] and det in process_steps:
-            return process_steps.index(det), det
+        if object_id not in state["seen_objects"] and object_id in process_steps:
+            return process_steps.index(object_id), object_id
 
     return -1, -1
     
-def handle_state_change(step, object_id, frame_num, total_frames, fps):
-    # state["state_changed"] = True
-    prev_step = state["prev_step"]
-    state["is_step_completed"][prev_step] = True
+def handle_state_change(next_step_num, next_object_id, frame_num, fps, is_last_step=False):
 
-    # previous step ends here
-    state["step_end_frame_num"] = frame_num
+    # check if this is the first object other than the start marker
+    if len(state["seen_objects"]) == 1:
+        print("FIRST OBJECT SEEN")
+        # this means this is the first process object to be seen
+        state["steps_started"] = True
+        state["step_start_frame_num"] = frame_num
+        state["prev_step"] = next_step_num
+        state["seen_objects"].append(next_object_id)
+
+    else:
+        print("not first object")
+        # calc step time for previous step
+        prev_step = state["prev_step"]
+
+        # previous step ends here
+        state["step_end_frame_num"] = frame_num
+
+        # calculate cycle time for the previous step
+        time_taken = get_time_elapsed_ms(state["step_start_frame_num"], state["step_end_frame_num"], fps)
+        print(f'Time taken to complete step {prev_step}: {time_taken} ms')
+        state["step_times"][prev_step] = round(time_taken, 2)
+        
+        state["is_step_completed"][prev_step] = True
+        state["sequence"].append(prev_step)
+        state["num_steps_completed"] += 1
+
+        if not is_last_step:
+            # set start frame number for next step
+            # if next_step_num <= NUM_STEPS and frame_num < total_frames:
+            state["step_start_frame_num"] = frame_num + 1
+
+            # set prev_step to the current step
+            state["prev_step"] = next_step_num
+
+            state["seen_objects"].append(next_object_id)
+
     
-    # calculate cycle time for the previous step
-    start_frame, end_frame = state["step_start_frame_num"], state["step_end_frame_num"]
-    time_taken = 1000.0 * (end_frame - start_frame) / fps
-    print(f'Time taken to complete step {prev_step}: {time_taken} ms')
-    state["cycle_times"][prev_step] = round(time_taken, 2)
-    state["num_steps_completed"] += 1
-
-    # set start frame number for next step
-    if step <= NUM_STEPS and frame_num < total_frames:
-        state["step_start_frame_num"] = frame_num + 1
-
-    state["prev_step"] = step
-    state["seen_objects"].append(object_id)
-
     pprint(state)
 
 
 
-# process starting is presence of cell phone, start timer
-# when we see a different bounding box, the start of a new step, and the end of whatever the previous step was
+
+def is_object_present(detections, object_id):
+    return object_id in detections
+
+
+def handle_cycle_start(detections, frame_num):
+    if start_marker_object_id in detections:
+        state["cycle_started"] = True
+        state["cycle_start_frame_num"] = frame_num
+        state["seen_objects"].append(start_marker_object_id)
+        print("CYCYLE STARTED")
+
+
+def handle_cycle_end(frame_num, fps):
+    if state["prev_step"] != -1:
+        handle_state_change(frame_num=frame_num, fps=fps, is_last_step=True)
+    
+    state["cycle_ended"] = True
+    state["cycle_ended_frame_num"] = frame_num
+    print("CYCYLE ENDED")
+    # TODO refresh state
+
 # number of steps, step configuration is in db, make query to get data
 def check_step(detections, frame_num, total_frames, fps):
-    if state["process_completed"]:
+    # test for one cycle now
+    if state["cycle_ended"]:
         return
 
-    # we have seen the start object
-    # the next frame, we dont have to check for process start again, it has started already
-    if not state["process_started"]:
-        # check for the first object
-        if start_step_object_id in detections:
-            state["process_started"] = True
-            print("PROCESS STARTED")
-            state["step_start_frame_num"] = frame_num
-            state["prev_step"] = 0
-            state["seen_objects"].append(start_step_object_id)
-            pprint(state)
+    # we have seen the start marker
+    # the next frame, we dont have to check for cycle start again, it has started already
+    if not state["cycle_started"]:
+            if is_object_present(detections, start_marker_object_id):
+                handle_cycle_start(detections, frame_num)
+                pprint(state)
 
-    # return if we havent seen the first step's object
-    if not state["process_started"]:
+    if not state["cycle_started"]:
         return
 
-    # check if there is an object other than starting object
-    next_step, object_id = get_step_number(detections, frame_num, total_frames, fps)
-    # print(type(object_id))
+    if is_object_present(detections, end_marker_object_id):
+        handle_cycle_end(frame_num, fps)
+
+    # cycle started, we see a object(the start marker could still be in frame) that is not the end marker
+    # check if there is an object other than previously seen objects (including start marker)
+    next_step_num, next_object_id = get_step_number(detections, frame_num, total_frames, fps)
+    # print(type(next_object_id))
     # we havent seen a new object yet
-    if next_step == -1:
+    if next_step_num == -1:
         return
 
-    print(f'next_step: {next_step}')
+    print(f'next_step_num: {next_step_num}')
 
-    # if its the last object and if all previous steps are completed
-    # all_prev_steps_completed = state["num_steps_completed"] == NUM_STEPS - 1
-    # is_last_step = next_step == NUM_STEPS - 1
-    # if (is_last_step and all_prev_steps_completed):
-    #     state["process_completed"] = True
-
-    # if (not is_last_step) or (is_last_step and all_prev_steps_completed):
-    #     handle_state_change(next_step, object_id, frame_num, total_frames, fps)
-    
-    handle_state_change(next_step, object_id, frame_num, total_frames, fps)
-
-
+    handle_state_change(next_step_num, next_object_id, frame_num, fps, is_last_step=False)
 
 
 def show_steps(image):
@@ -200,7 +234,7 @@ def show_steps(image):
     for step in range(NUM_STEPS):
         cv2.putText(
             img=image,
-            text=f"Step {step + 1}, time_taken: {state['cycle_times'][step]} ms",
+            text=f"Step {step + 1}, time_taken: {state['step_times'][step]} ms",
             org=(X_OFFSET, Y_OFFSET + Y_PADDING * (step)),
             fontFace=0,
             fontScale=1,
@@ -470,7 +504,7 @@ def run(
             show_steps(im0)
 
             # Print time (inference-only)
-            # print(f"{s}Done. ({t3 - t2:.3f}s)")
+            print(f"{s}Done. ({t3 - t2:.3f}s)")
 
             # Stream results
             im0 = annotator.result()
@@ -518,13 +552,15 @@ def run(
         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
 
     
+    pprint(state)
+
     # write cycle times to db
     # cursor = cnx.cursor()
     # add_times = ("INSERT INTO emp_perf "
     #             "(emp_id, task_1_cycle_time_ms, task_2_cycle_time_ms, task_3_cycle_time_ms) "
     #             "VALUES (%s, %s, %s, %s)")
     
-    # data_times = (2, *state["cycle_times"])
+    # data_times = (2, *state["step_times"])
     # cursor.execute(add_times, data_times)
     # cnx.commit()
     # cursor.close()
