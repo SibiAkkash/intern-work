@@ -30,7 +30,7 @@ def write_to_db(
     cycle_video_path: str,
 ):
     cursor = cnx.cursor()
-    add_cycle = "INSERT INTO Cycle_seqs VALUES (%s, %s, %s)"
+    add_cycle = "INSERT INTO Cycle_seqs (station_id, sequence, video_path) VALUES (%s, %s, %s)"
 
     # create new cycle
     data_cycle = (2, json.dumps(sequence), cycle_video_path)
@@ -55,6 +55,7 @@ class VisualInspector:
         end_marker_object_id: int,
         process_object_ids: List[int],
         stream_fps: float,
+        db_connection: mysql.connector.connection_cext.CMySQLConnection,
         video_save_dir: str = "cycles",
     ):
         self.start_marker_object_id = start_marker_object_id
@@ -66,7 +67,7 @@ class VisualInspector:
         self.save_dir = Path(video_save_dir)
         self.vid_writer = None
 
-        print(self.stream_fps)
+        self.cnx = db_connection
 
         self.refresh_state()
 
@@ -135,7 +136,7 @@ class VisualInspector:
 
         # TODO can this be async ?
         write_to_db(
-            cnx=None,
+            cnx=self.cnx,
             sequence=self.state["step_sequence"],
             step_times=self.state["step_times"],
             cycle_video_path=self.state["cycle_vid_save_path"],

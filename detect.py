@@ -214,6 +214,7 @@ def run(
         end_marker_object_id=end_marker_object_id,
         process_object_ids=process_object_ids,
         stream_fps=dataset.fps[0],
+        db_connection=cnx
     )
 
     for path, img, im0s, vid_cap in dataset:

@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html lang="en">
+    <body>
+        <ul>
+            {% for cycle_id in cycles %}
+            <li>{{ cycle_id }}  {{ cycles[cycle_id]["seq"]}}</li>
+            {% endfor %}
+        </ul>
+    </body>
+</html>
