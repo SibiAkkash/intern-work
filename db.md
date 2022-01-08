@@ -31,3 +31,13 @@ CREATE TABLE Station_task_data (
     FOREIGN KEY (label_id) REFERENCES Labels(label_id)
 );
 ```
+
+```
+create table Cycles (
+    cycle_id int NOT NULL AUTO_INCREMENT,
+    station_id int,
+    sequence JSON NOT NULL,
+    PRIMARY KEY (cycle_id),
+    FOREIGN KEY (station_id) REFERENCES Stations(station_id)
+    );
+```

@@ -43,7 +43,10 @@ import torch.backends.cudnn as cudnn
 from frozendict import frozendict
 from pprint import pprint
 import mysql.connector
-from typing import List, Sequence
+from typing import List
+import json
+
+from helpers import get_time_elapsed_ms
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
@@ -117,7 +120,6 @@ def init_state():
     }
 
 
-
 def show_steps(image):
     # box background
     cv2.rectangle(
@@ -146,8 +148,6 @@ def show_steps(image):
             thickness=1,
         )
 
-def get_time_elapsed_ms(start_frame: int, end_frame: int, fps: float):
-    return 1000.0 * (end_frame - start_frame) / fps
 
 
 def get_step_number(detections: List[int]):
@@ -214,32 +214,48 @@ def is_object_present(detections: List[int], object_id: int):
 
 
 def handle_cycle_start(detections: List[int], frame_num: int):
-    if start_marker_object_id in detections:
-        state["cycle_started"] = True
-        state["cycle_start_frame_num"] = frame_num
-        state["seen_objects"].append(start_marker_object_id)
-        print("CYCLE STARTED")
+    state["cycle_started"] = True
+    state["cycle_start_frame_num"] = frame_num
+    state["seen_objects"].append(start_marker_object_id)
+    print("CYCLE STARTED")
 
+
+def write_to_db():
+    cursor = cnx.cursor()
+    add_cycle = ("INSERT INTO Cycle_seqs "
+                "(station_id, sequence) "
+                "VALUES (%s, %s)")
+
+    # create new cycle
+    data_cycle = (2, json.dumps(state["sequence"]))
+    cursor.execute(add_cycle, data_cycle)
+
+    cycle_id = cursor.lastrowid
+
+    # add step times
+    add_times = 'INSERT INTO Cycles values (%s, %s, %s)'
+    for step_num in range(NUM_STEPS):
+        data_times = (cycle_id, step_num, state["step_times"][step_num])
+        cursor.execute(add_times, data_times)
+
+    cnx.commit()
+    cursor.close()
 
 def handle_cycle_end(frame_num: int, fps: float):
     if state["prev_step"] != -1:
         handle_state_change(frame_num=frame_num, fps=fps)
-    
-    cycle_seqs.append(state['sequence'])
-    
+  
+    write_to_db()
+
     # refresh state
     init_state()
-    # time.sleep(0.2)
-    # state["cycle_ended"] = True
-    # state["cycle_ended_frame_num"] = frame_num
     print("CYCLE ENDED")
     pprint(state)
     
 
 
-
 # number of steps, step configuration is in db, make query to get data
-def check_step(detections: List[int], frame_num: int, fps: float):
+def process_detections(detections: List[int], frame_num: int, fps: float):
     # we have seen the start marker
     # the next frame, we dont have to check for cycle start again, it has started already
     if not state["cycle_started"]:
@@ -402,10 +418,11 @@ def run(
 
     # process each image
     # self.sources, img, img0, None
+    fps = dataset.fps[0]
+
     for path, img, im0s, vid_cap in dataset:
         # fps = vid_cap.get(cv2.CAP_PROP_FPS)
-        fps = dataset.fps[0]
-        frame_num = dataset.count
+        
 
         t1 = time_sync()
         if onnx:
@@ -511,7 +528,8 @@ def run(
                 # For video
                 # check_step(detections=det_list, frame_num=dataset.frame, total_frames=dataset.frames, fps=fps)
                 # For webcam
-                check_step(detections=det_list, frame_num=frame_num, fps=fps)
+                frame_num = dataset.count
+                process_detections(detections=det_list, frame_num=frame_num, fps=fps)
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
@@ -594,19 +612,6 @@ def run(
         print(f"Results saved to {colorstr('bold', save_dir)}{s}")
     if update:
         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
-
-    pprint(state)
-
-    # write cycle times to db
-    # cursor = cnx.cursor()
-    # add_times = ("INSERT INTO emp_perf "
-    #             "(emp_id, task_1_cycle_time_ms, task_2_cycle_time_ms, task_3_cycle_time_ms) "
-    #             "VALUES (%s, %s, %s, %s)")
-
-    # data_times = (2, *state["step_times"])
-    # cursor.execute(add_times, data_times)
-    # cnx.commit()
-    # cursor.close()
 
 
 def parse_opt():
@@ -699,6 +704,6 @@ def main(opt):
 if __name__ == "__main__":
     opt = parse_opt()
     init_state()
-    # cnx = mysql.connector.connect(**db_connection_config)
+    cnx = mysql.connector.connect(**db_connection_config)
     main(opt)
-    # cnx.close()
+    cnx.close()
