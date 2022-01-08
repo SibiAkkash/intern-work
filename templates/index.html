@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
     <body>
-        <ul>
-            {% for cycle_id in cycles %}
-            <li>{{ cycle_id }}  {{ cycles[cycle_id]["seq"]}}</li>
-            {% endfor %}
-        </ul>
+        {% for cycle_id in cycles %}
+        <p>Cycle id: {{cycle_id}}, Station id: {{cycles[cycle_id]["station_id"]}}</p>
+        <table>
+            <!--  -->
+        </table>
+        {% endfor %}
     </body>
 </html>
