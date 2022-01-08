@@ -6,8 +6,7 @@ Usage:
     python3 .\detect.py --source 0 --weights yolov5s.pt --conf 0.25 --view-img --class 65 67 76 --device 0
 """
 
-# from datetime import time
-import time
+from datetime import time
 
 from PIL.Image import init
 from utils.torch_utils import load_classifier, select_device, time_sync
@@ -61,7 +60,6 @@ CELL_PHONE_ID = 67
 BOOK_ID = 73
 SCISSORS_ID = 76
 
-
 db_connection_config = {
     "user": "sibi",
     "password": "pass1234",
@@ -69,18 +67,19 @@ db_connection_config = {
     "database": "test_db",
 }
 
+# we get steps from db
+# steps = list of labels (index of label is the step number)
+# TODO assuming there cannot be duplicate labels (different steps cannot have same object)
 process_object_ids = [CELL_PHONE_ID, REMOTE_ID, SCISSORS_ID]
 start_marker_object_id = KEYBOARD_ID
 end_marker_object_id = MOUSE_ID
-
-NUM_STEPS = len(process_object_ids)
 
 X_OFFSET = 30
 Y_OFFSET = 30
 Y_PADDING = 25
 RECT_POINT_1 = (X_OFFSET - 60, Y_OFFSET - 60)
 RECT_POINT_1 = (10, 10)
-RECT_POINT_2 = (300, (Y_PADDING * (NUM_STEPS + 2)))
+RECT_POINT_2 = (300, (Y_PADDING * (len(process_object_ids) + 2)))
 
 DONE_COLOUR = (6, 201, 65)
 NOT_DONE_COLOUR = (255, 255, 255)
@@ -217,13 +216,14 @@ def run(
     fps = dataset.fps[0]
 
     inspector = VisualInspector(
-        start_marker_object_id = start_marker_object_id,
-        end_marker_object_id = end_marker_object_id,
-        process_object_ids = process_object_ids,
-        stream_fps = dataset.fps[0],
+        start_marker_object_id=start_marker_object_id,
+        end_marker_object_id=end_marker_object_id,
+        process_object_ids=process_object_ids,
+        stream_fps=dataset.fps[0],
     )
 
     for path, img, im0s, vid_cap in dataset:
+        # for video
         # fps = vid_cap.get(cv2.CAP_PROP_FPS)
 
         t1 = time_sync()
@@ -293,6 +293,7 @@ def run(
                 p, s, im0, frame = path[i], f"{i}: ", im0s[i].copy(), dataset.count
             else:
                 p, s, im0, frame = path, "", im0s.copy(), getattr(dataset, "frame", 0)
+            
             """
             detection format: [top_left_x, top_left_y, bottom_right_x, bottom_right_y, confidence, class]
             pred = tensor([detection], [detection], ...)
@@ -311,29 +312,23 @@ def run(
             imc = im0.copy() if save_crop else im0  # for save_crop
             annotator = Annotator(im0, line_width=line_thickness, pil=not ascii)
 
+
+            det_list = []
+            # class_number: number of detections
+            # detections = {}
+
+            # process detections if any
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
-
-                # class_number: number of detections
-                detections = {}
-                det_list = []
 
                 # Print results
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # num detections per class
                     # add to string
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "
-                    detections[int(c.item())] = int(n.item())
+                    # detections[int(c.item())] = int(n.item())
                     det_list.append(int(c.item()))
-
-                # For video
-                # check_step(detections=det_list, frame_num=dataset.frame, total_frames=dataset.frames, fps=fps)
-                
-                # For webcam
-                frame_num = dataset.count
-                # process_detections(detections=det_list, frame_num=frame_num, fps=fps)
-                inspector.process_detections(detections=det_list, frame_num=frame_num)
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
@@ -366,7 +361,15 @@ def run(
                                 BGR=True,
                             )
 
-            # * show steps
+            # For webcam
+            frame_num = dataset.count
+            inspector.process_detections(
+                detections=det_list, frame_num=frame_num, current_frame=im0.copy()
+            )
+            # For video
+            # check_step(detections=det_list, frame_num=dataset.frame, total_frames=dataset.frames, fps=fps)
+            # process_detections(detections=det_list, frame_num=frame_num, fps=fps)
+
             # show_steps(im0)
 
             # Print time (inference-only)
