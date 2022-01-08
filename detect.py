@@ -60,12 +60,6 @@ CELL_PHONE_ID = 67
 BOOK_ID = 73
 SCISSORS_ID = 76
 
-db_connection_config = {
-    "user": "sibi",
-    "password": "pass1234",
-    "host": "localhost",
-    "database": "test_db",
-}
 
 # we get steps from db
 # steps = list of labels (index of label is the step number)
@@ -293,7 +287,7 @@ def run(
                 p, s, im0, frame = path[i], f"{i}: ", im0s[i].copy(), dataset.count
             else:
                 p, s, im0, frame = path, "", im0s.copy(), getattr(dataset, "frame", 0)
-            
+
             """
             detection format: [top_left_x, top_left_y, bottom_right_x, bottom_right_y, confidence, class]
             pred = tensor([detection], [detection], ...)
@@ -311,7 +305,6 @@ def run(
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]
             imc = im0.copy() if save_crop else im0  # for save_crop
             annotator = Annotator(im0, line_width=line_thickness, pil=not ascii)
-
 
             det_list = []
             # class_number: number of detections
@@ -367,8 +360,7 @@ def run(
                 detections=det_list, frame_num=frame_num, current_frame=im0.copy()
             )
             # For video
-            # check_step(detections=det_list, frame_num=dataset.frame, total_frames=dataset.frames, fps=fps)
-            # process_detections(detections=det_list, frame_num=frame_num, fps=fps)
+            # process_detections(detections=det_list, frame_num=frame_num, fps=fps, current_frame=im0.copy())
 
             # show_steps(im0)
 
@@ -507,10 +499,15 @@ def main(opt):
     # check_requirements(exclude=("tensorboard", "thop"))
     run(**vars(opt))
 
+db_connection_config = {
+    "user": "sibi",
+    "password": "pass1234",
+    "host": "localhost",
+    "database": "test_db",
+}
 
 if __name__ == "__main__":
     opt = parse_opt()
-    # init_state()
-    # cnx = mysql.connector.connect(**db_connection_config)
+    cnx = mysql.connector.connect(**db_connection_config)
     main(opt)
-    # cnx.close()
+    cnx.close()

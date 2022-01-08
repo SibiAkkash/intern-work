@@ -7,7 +7,7 @@ from pathlib import Path
 import string
 import random
 import cv2
-import imutils
+import mysql.connector
 
 
 def is_object_present(detections: List[int], object_id: int):
@@ -21,6 +21,31 @@ def is_object_present(detections: List[int], object_id: int):
 # if this new bounding box is the end marker, the cycle has finished, refresh state
 # Step order doesnt matter, cycle start and end is based on presence of start and end marker respectively.
 # ------------------------------------------------------------------------------------------------------------
+
+
+def write_to_db(
+    cnx: mysql.connector.connection_cext.CMySQLConnection,
+    sequence: List[int],
+    step_times: List[float],
+    cycle_video_path: str,
+):
+    cursor = cnx.cursor()
+    add_cycle = "INSERT INTO Cycle_seqs VALUES (%s, %s, %s)"
+
+    # create new cycle
+    data_cycle = (2, json.dumps(sequence), cycle_video_path)
+    cursor.execute(add_cycle, data_cycle)
+
+    cycle_id = cursor.lastrowid
+
+    # add step times
+    add_times = "INSERT INTO Cycles VALUES (%s, %s, %s)"
+    for step_num in range(len(step_times)):
+        data_times = (cycle_id, step_num, step_times[step_num])
+        cursor.execute(add_times, data_times)
+
+    cnx.commit()
+    cursor.close()
 
 
 class VisualInspector:
@@ -81,7 +106,7 @@ class VisualInspector:
         )
 
     def save_frame(self):
-        print('saving frame')
+        print("saving frame")
         if self.vid_writer:
             self.vid_writer.write(self.current_frame)
 
@@ -102,13 +127,19 @@ class VisualInspector:
         # if there was any step, do necessary processing
         if self.state["prev_step"] != -1:
             self._handle_state_change(frame_num=frame_num)
-        
+
         # save last frame of cycle
         self.save_frame()
         # release vid writer pointer
         self.vid_writer.release()
 
-        # TODO write to db
+        # TODO can this be async ?
+        write_to_db(
+            cnx=None,
+            sequence=self.state["step_sequence"],
+            step_times=self.state["step_times"],
+            cycle_video_path=self.state["cycle_vid_save_path"],
+        )
 
         self.refresh_state()
         print("CYCLE ENDED")
@@ -199,7 +230,6 @@ class VisualInspector:
             self._handle_cycle_end(frame_num)
             return
 
-
         # at this step, the cycle has started, it hasn't ended
         # save all these frames
         self.save_frame()
@@ -247,23 +277,3 @@ class VisualInspector:
 #             color=color,
 #             thickness=1,
 #         )
-
-# def write_to_db():
-#     cursor = cnx.cursor()
-#     add_cycle = "INSERT INTO Cycle_seqs " "(station_id, sequence) " "VALUES (%s, %s)"
-
-#     # create new cycle
-#     data_cycle = (2, json.dumps(state["sequence"]))
-#     cursor.execute(add_cycle, data_cycle)
-
-#     cycle_id = cursor.lastrowid
-
-#     # add step times
-#     add_times = "INSERT INTO Cycles values (%s, %s, %s)"
-#     for step_num in range(NUM_STEPS):
-#         data_times = (cycle_id, step_num, state["step_times"][step_num])
-#         cursor.execute(add_times, data_times)
-
-#     cnx.commit()
-#     cursor.close()
-
