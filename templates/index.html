@@ -1,11 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@latest/css/pico.min.css">
     <body>
-        {% for cycle_id in cycles %}
-        <p>Cycle id: {{cycle_id}}, Station id: {{cycles[cycle_id]["station_id"]}}</p>
-        <table>
-            <!--  -->
-        </table>
-        {% endfor %}
+        <main class="container">
+            <h3 align="center">Cycle data</h3>
+            {% for cycle_id in cycles %}
+                <article>
+
+                    <h5>
+                        Station  {{ cycles[cycle_id]["station_id"] }},
+                        Cycle: {{ cycle_id }}, 
+                        Step sequence: {{ cycles[cycle_id]["seq"] }}
+                    </h5>
+                    <table role="grid">
+                        <thead>
+                            <tr>
+                                <th scope="col">Step number</th>
+                                <th scope="col">Step name</th>
+                                <th scope="col">time taken (ms)</th>
+                            </tr>
+                        </thead>
+                        {% for i in range(3) %}
+                            <tbody>
+                                <tr>
+                                    <th scope="row">{{ i }}</th>
+                                    <td>{{ cycles[cycle_id]["labels"][i] }}</td>
+                                    <td>{{ cycles[cycle_id]["step_times"][i] }}</td>
+                                </tr>
+                            </tbody>
+                        {% endfor %}
+                    </table>
+                </article>
+            {% endfor %}
+        </main>
     </body>
 </html>

@@ -53,6 +53,8 @@ def get_data():
         cycle_data[cycle_id]["step_times"] = step_times
         cycle_data[cycle_id]["labels"] = labels
 
+        num_steps = len(labels)
+        cycle_data[cycle_id]["num_steps"] = num_steps
 
     pprint(cycle_data)
 

@@ -1,13 +1,13 @@
 from typing import List
-from helpers import get_time_elapsed_ms
+from helpers import get_time_elapsed_ms, get_random_string
 from pprint import pprint
 import json
 import numpy as np
+import numpy.typing as npt
 from pathlib import Path
-import string
-import random
 import cv2
 import mysql.connector
+from __future__ import annotations
 
 
 def is_object_present(detections: List[int], object_id: int):
@@ -73,7 +73,7 @@ class VisualInspector:
 
     def refresh_state(self) -> None:
         # generate random name for cycle video
-        cycle_vid_name = "".join(random.choice(string.ascii_letters) for _ in range(10))
+        cycle_vid_name = get_random_string(length=10)
         extension = "mp4"
         save_path = f"{str(self.save_dir / cycle_vid_name)}.{extension}"
 
@@ -107,7 +107,6 @@ class VisualInspector:
         )
 
     def save_frame(self):
-        print("saving frame")
         if self.vid_writer:
             self.vid_writer.write(self.current_frame)
 
@@ -124,10 +123,11 @@ class VisualInspector:
         self._create_vid_writer()
         self.save_frame()
 
-    def _handle_cycle_end(self, frame_num: float):
+    def _handle_cycle_end(self, frame_num: int):
         # if there was any step, do necessary processing
+        # TODO refactor this
         if self.state["prev_step"] != -1:
-            self._handle_state_change(frame_num=frame_num)
+            self._handle_next_step(frame_num=frame_num)
 
         # save last frame of cycle
         self.save_frame()
@@ -146,7 +146,8 @@ class VisualInspector:
         print("CYCLE ENDED")
         pprint(self.state)
 
-    def _handle_state_change(
+    # TODO refactor this method
+    def _handle_next_step(
         self,
         frame_num: int,
         next_step_num: int = -1,
@@ -208,7 +209,7 @@ class VisualInspector:
         return -1, -1
 
     def process_detections(
-        self, detections: List[int], frame_num: int, current_frame: np.ndarray
+        self, detections: List[int], frame_num: int, current_frame: npt.NDArray
     ):
 
         self.current_frame = current_frame
@@ -226,7 +227,6 @@ class VisualInspector:
         end_marker_found = is_object_present(
             detections=detections, object_id=self.end_marker_object_id
         )
-
         if end_marker_found:
             self._handle_cycle_end(frame_num)
             return
@@ -235,7 +235,7 @@ class VisualInspector:
         # save all these frames
         self.save_frame()
 
-        # cycle started, we see a object(the start marker could still be in frame) that is not the end marker
+        # cycle started, we see an object(the start marker could still be in frame) that is not the end marker
         # check if there is an object other than previously seen objects (including start marker)
         next_step_num, next_object_id = self._get_step_number(detections)
 
@@ -243,7 +243,7 @@ class VisualInspector:
         if next_step_num == -1:
             return
 
-        self._handle_state_change(
+        self._handle_next_step(
             next_step_num=next_step_num,
             next_object_id=next_object_id,
             frame_num=frame_num,
