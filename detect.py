@@ -405,10 +405,8 @@ def run(
                                     is_colliding = True
                                     break
 
-                    if is_colliding:
-                        annotator.box_label(xyxy, label, color=(0, 0, 255))
-                    else:
-                        annotator.box_label(xyxy, label, color=(0, 255, 0))
+                    color = (0, 0, 255) if is_colliding else (0, 255, 0)
+                    annotator.box_label(xyxy, label, color=color)
 
                 # Write results
                 # for *xyxy, conf, cls in reversed(det):
