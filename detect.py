@@ -6,6 +6,14 @@ Usage:
     python3 .\detect.py --source 0 --weights yolov5s.pt --conf 0.25 --view-img --class 65 67 76 --device 0
 """
 
+# Stream webcam
+# ffmpeg -f v4l2 -i /dev/video2 \
+# -vcodec mjpeg \
+# -r 30 \
+# -b:v 1024k \
+# -s 1920x1080 
+# udp://192.168.1.7:8000/video.mjpeg
+
 from datetime import time
 
 from PIL.Image import init
@@ -294,7 +302,7 @@ def run(
             pred = tensor([detection], [detection], ...)
             Output: 0: 480x640 1 person, 1 cell phone, Done. (0.595s)
             """
-            # print(det)
+            print(det)
 
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # img.jpg
@@ -357,16 +365,16 @@ def run(
 
             # For webcam
             frame_num = dataset.count
-            inspector.process_detections(
-                detections=det_list, frame_num=frame_num, current_frame=im0.copy()
-            )
+            # inspector.process_detections(
+            #     detections=det_list, frame_num=frame_num, current_frame=im0.copy()
+            # )
             # For video
             # process_detections(detections=det_list, frame_num=frame_num, fps=fps, current_frame=im0.copy())
 
             # show_steps(im0)
 
             # Print time (inference-only)
-            # print(f"{s}Done. ({t3 - t2:.3f}s)")
+            print(f"{s}Done. ({t3 - t2:.3f}s)")
 
             # Stream results
             im0 = annotator.result()

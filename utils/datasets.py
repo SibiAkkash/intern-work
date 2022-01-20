@@ -208,14 +208,14 @@ class LoadImages:  # for inference
                     ret_val, img0 = self.cap.read()
 
             self.frame += 1
-            print(f'video {self.count + 1}/{self.nf} ({self.frame}/{self.frames}) {path}: ', end='')
+            print(f'video {self.count + 1}/{self.nf} ({self.frame}/{self.frames}) {path}: ')
 
         else:
             # Read image
             self.count += 1
             img0 = cv2.imread(path)  # BGR
             assert img0 is not None, 'Image Not Found ' + path
-            print(f'image {self.count}/{self.nf} {path}: ', end='')
+            print(f'image {self.count}/{self.nf} {path}: ')
 
         # Padded resize
         img = letterbox(img0, self.img_size, stride=self.stride, auto=self.auto)[0]
@@ -261,7 +261,7 @@ class LoadWebcam:  # for inference
         # Print
         assert ret_val, f'Camera Error {self.pipe}'
         img_path = 'webcam.jpg'
-        print(f'webcam {self.count}: ', end='')
+        # print(f'webcam {self.count}: ', end='')
 
         # Padded resize
         img = letterbox(img0, self.img_size, stride=self.stride)[0]

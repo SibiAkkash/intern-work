@@ -17,7 +17,7 @@ from utils.general import (
     strip_optimizer,
     xyxy2xywh,
 )
-from utils.datasets import LoadImages, LoadStreams
+from utils.datasets import LoadImages, LoadStreams, LoadWebcam
 from models.experimental import attempt_load
 import argparse
 import sys
@@ -27,17 +27,11 @@ import cv2
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
-import mediapipe as mp
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
-
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
-mp_hands = mp.solutions.hands
-
 
 @torch.no_grad()
 def run(
@@ -67,19 +61,17 @@ def run(
     half=False,  # use FP16 half-precision inference
 ):
 
-    save_img = not nosave and not source.endswith(".txt")  # save inference images
     webcam = (
         source.isnumeric()
         or source.endswith(".txt")
         or source.lower().startswith(("rtsp://", "rtmp://", "http://", "https://"))
     )
 
-    # Directories
     save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
     (save_dir / "labels" if save_txt else save_dir).mkdir(
         parents=True, exist_ok=True
     )  # make dir
-    # Initialize
+
     set_logging()
     device = select_device(device)
     half &= device.type != "cpu"  # half precision only supported on CUDA
@@ -103,18 +95,17 @@ def run(
     )  # get class names
     if half:
         model.half()  # to FP16
-    if classify:  # second-stage classifier
-        modelc = load_classifier(name="resnet50", n=2)  # initialize
-        modelc.load_state_dict(
-            torch.load("resnet50.pt", map_location=device)["model"]
-        ).to(device).eval()
+    
 
     imgsz = check_img_size(imgsz, s=stride)  # check image size
     ascii = is_ascii(names)  # names are ascii (use PIL for UTF-8)
 
-    # initialise hand tracker
-    hands = mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+   
+    stream = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt)
+    bs = len(stream)  # batch_size
+    vid_path, vid_writer = [None] * bs, [None] * bs
 
+     
     # Run inference
     if pt and device.type != "cpu":
         # run once
@@ -122,20 +113,8 @@ def run(
 
     dt, seen = [0.0, 0.0, 0.0], 0
 
-    # Load streams
-    cap = cv2.VideoCapture(1)
-    print("opened webcam stream")
-
-    count = 0
     # Get each frame from webcam stream
-    while cap.isOpened():
-        success, img = cap.read()
-        count += 1
-        if not success:
-            print("Ignoring empty camera frame.")
-            # If loading a video, use 'break' instead of 'continue'
-            continue
-
+    for path, img, im0s, vid_cap in stream:
         t1 = time_sync()
 
         img = torch.from_numpy(img).to(device)
@@ -168,18 +147,18 @@ def run(
         # Process predictions
         for i, det in enumerate(pred):  # per image
             seen += 1
-            p, s, frame_num = str(source), f"{i}: ", count
+            p, s, im0, frame = path[i], f"{i}: ", im0s[i].copy(), stream.count
 
             p = Path(p)  # to Path
             s += "%gx%g " % img.shape[2:]  # print string
             # normalization gain whwh
             gn = torch.tensor(img.shape)[[1, 0, 1, 0]]
             imc = img.copy() if save_crop else img  # for save_crop
-            annotator = Annotator(img, line_width=line_thickness, pil=not ascii)
+            annotator = Annotator(im0, line_width=line_thickness, pil=not ascii)
 
             if len(det):
                 # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], img.shape).round()
+                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
 
                 # Print results
                 for c in det[:, -1].unique():
@@ -188,7 +167,7 @@ def run(
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
-                    if save_img or save_crop or view_img:  # Add bbox to image
+                    if view_img:  # Add bbox to image
                         c = int(cls)  # integer class
                         label = (
                             None
@@ -207,11 +186,11 @@ def run(
         print(f"{s}Done. ({t3 - t2:.3f}s)")
 
         # Stream results
-        img = annotator.result()
+        im0 = annotator.result()
 
         if view_img:
-            cv2.imshow(str(p), img)
-            cv2.waitKey(1)
+            cv2.imshow(str(p), im0)
+            cv2.waitKey(5)
 
         # Print results
         t = tuple(x / seen * 1e3 for x in dt)  # speeds per image
@@ -219,13 +198,6 @@ def run(
             f"Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}"
             % t
         )
-
-        if cv2.waitKey(1) == ord("q"):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
 
 def parse_opt():
     parser = argparse.ArgumentParser()
@@ -310,7 +282,7 @@ def parse_opt():
 
 
 def main(opt):
-    check_requirements(exclude=("tensorboard", "thop"))
+    # check_requirements(exclude=("tensorboard", "thop"))
     run(**vars(opt))
 
 

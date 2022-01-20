@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import List
 from helpers import get_time_elapsed_ms, get_random_string
 from pprint import pprint
@@ -7,7 +8,6 @@ import numpy.typing as npt
 from pathlib import Path
 import cv2
 import mysql.connector
-from __future__ import annotations
 
 
 def is_object_present(detections: List[int], object_id: int):
