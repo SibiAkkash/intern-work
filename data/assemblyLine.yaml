@@ -1,0 +1,9 @@
+path: ../test_ds_aug  # dataset root dir
+train: images/train/  # train images (relative to 'path')
+val: images/val  # train images (relative to 'path')
+
+# Classes
+nc: 8  
+names: ['horn', 'speedo', 'exposed_fork', 
+        'torque_tool_hanging', 'torque_tool_inserted', 
+        'ball_bearing_tool', 'QR_code_scanner', 'wheel_with_fender']  

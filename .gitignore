@@ -29,8 +29,6 @@ fodata/*
 !data/images/zidane.jpg
 !data/images/bus.jpg
 !data/*.sh
-!experiments/test_ds/train/images/*.jpg
-!experiments/test_ds/val/images/*.jpg
 
 results*.csv
 
@@ -38,7 +36,12 @@ results*.csv
 coco/
 coco128/
 VOC/
+
+
+experiments/test_ds/
 experiments/test_ds_aug/
+experiments/new_imgs
+experiments/new_labels
 
 
 # MATLAB GitIgnore -----------------------------------------------------------------------------------------------------

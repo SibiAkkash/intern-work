@@ -197,6 +197,9 @@ class LoadImages:  # for inference
             # Read video
             self.mode = 'video'
             ret_val, img0 = self.cap.read()
+
+            img0 = cv2.resize(img0, (540, 960))
+
             if not ret_val:
                 self.count += 1
                 self.cap.release()
@@ -206,6 +209,8 @@ class LoadImages:  # for inference
                     path = self.files[self.count]
                     self.new_video(path)
                     ret_val, img0 = self.cap.read()
+                    img0 = cv2.resize(img0, (540, 960))
+
 
             self.frame += 1
             print(f'video {self.count + 1}/{self.nf} ({self.frame}/{self.frames}) {path}: ')
@@ -328,6 +333,12 @@ class LoadStreams:  # multiple IP or RTSP cameras
             cap.grab()
             if n % read == 0:
                 success, im = cap.retrieve()
+                
+                # resize img
+                im = cv2.resize(im, (960, 540))
+                # rotate img
+                im = cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE)
+                
                 self.imgs[i] = im if success else self.imgs[i] * 0
             time.sleep(1 / self.fps[i])  # wait time
 
