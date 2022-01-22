@@ -40,8 +40,8 @@ VOC/
 
 experiments/test_ds/
 experiments/test_ds_aug/
-experiments/new_imgs
-experiments/new_labels
+experiments/new_imgs/
+experiments/new_labels/
 
 
 # MATLAB GitIgnore -----------------------------------------------------------------------------------------------------
