@@ -1,8 +1,0 @@
-horn
-speedo
-exposed_fork
-torque_tool_hanging
-torque_tool_inserted
-ball_bearing_tool
-QR_code_scanner
-wheel_with_fender
